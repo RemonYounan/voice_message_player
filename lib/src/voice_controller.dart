@@ -48,11 +48,17 @@ class VoiceController extends MyTicker {
   PlayStatus playStatus = PlayStatus.init;
   PlaySpeed speed = PlaySpeed.x1;
   ValueNotifier<int> updater = ValueNotifier<int>(0);
-  List<double>? randoms;
   StreamSubscription? positionStream;
   StreamSubscription? playerStateStream;
   double? downloadProgress = 0;
   Uint8List? bytes;
+
+  // Cache for storing waveforms for each unique audioSrc
+  static Map<String, List<double>> waveformCache = {};
+
+  List<double>? randoms;
+
+  late double noiseWidth;
 
   /// Gets the current playback position of the voice.
   double get currentMillSeconds {
@@ -77,8 +83,7 @@ class VoiceController extends MyTicker {
 
   bool get isPause => playStatus == PlayStatus.pause;
 
-  double get maxMillSeconds => maxDuration.inMilliseconds.toDouble();
-  late double noiseWidth;
+  double get maxMillSeconds => maxDuration.inMilliseconds.toDouble() - 300;
 
   /// Creates a new [VoiceController] instance.
   VoiceController({
@@ -180,13 +185,21 @@ class VoiceController extends MyTicker {
     if (isInited) return;
     isInited = true;
     noiseWidth = _noiseWidth;
-    if (randoms?.isEmpty ?? true) _setRandoms();
+
+    // Check if the waveform for this audioSrc is cached
+    if (waveformCache.containsKey(audioSrc)) {
+      randoms = waveformCache[audioSrc]; // Use cached waveform
+    } else {
+      _setRandoms(); // Generate new waveform
+      waveformCache[audioSrc] = randoms!; // Cache the new waveform
+    }
+
     animController = AnimationController(
       vsync: this,
       upperBound: noiseWidth,
-      duration: maxDuration,
+      duration: Duration(seconds: maxDuration.inSeconds - 1, milliseconds: 700),
     );
-    // _updateUi();
+
     _listenToRemindingTime();
     _listenToPlayerState();
   }
@@ -216,19 +229,28 @@ class VoiceController extends MyTicker {
 
   void _listenToRemindingTime() {
     positionStream = _player.onPositionChanged.listen((position) async {
-      // if (event.position == null) return;
       if (!isDownloading) currentDuration = position;
 
       final value = (noiseWidth * currentMillSeconds) / maxMillSeconds;
       animController.value = value;
 
+      // When the audio reaches the end
       if (position.inMilliseconds >= maxMillSeconds) {
         await _player.stop();
         currentDuration = Duration.zero;
         playStatus = PlayStatus.init;
-        animController.reset();
         _updateUi();
-        onComplete();
+
+        // Reset the animation controller and noise indicator to start
+        animController.value = 0; // Ensures the noise goes back to the start
+        animController.reset(); // Resets the animation state
+
+        // Reset the waveform noise to the beginning if necessary
+        randoms = waveformCache[
+            audioSrc]; // Ensure we reset to the cached wave pattern
+
+        _updateUi();
+        onComplete(); // Call the completion handler
       } else {
         playStatus = PlayStatus.playing;
         _updateUi();
@@ -359,9 +381,6 @@ class VoiceController extends MyTicker {
         speed = PlaySpeed.x2;
         break;
       case PlaySpeed.x2:
-        speed = PlaySpeed.x2_25;
-        break;
-      case PlaySpeed.x2_25:
         speed = PlaySpeed.x1;
         break;
     }
@@ -377,6 +396,7 @@ class VoiceController extends MyTicker {
     pausePlaying();
   }
 
+  /// Generates the random waveform noise
   void _setRandoms() {
     randoms = [];
     for (var i = 0; i < (noiseWidth / 5.5); i++) {
